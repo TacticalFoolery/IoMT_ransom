@@ -1,0 +1,16 @@
+# Ignore dataset files
+data/
+
+# Ignore logs and data files
+*.csv
+*.log
+*.parquet
+
+# Python stuff
+__pycache__/
+.ipynb_checkpoints/
+*.pyc
+
+# OS junk
+.DS_Store
+Thumbs.db
