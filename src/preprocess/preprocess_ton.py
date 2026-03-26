@@ -3,7 +3,7 @@ import numpy as np
 import pandas as pd
 import joblib
 
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import GroupShuffleSplit
 from sklearn.preprocessing import StandardScaler
 
 from src.config import Config
@@ -80,13 +80,23 @@ def main():
     print("Combined shape after sampling:", df.shape)
     # df = df.drop_duplicates().reset_index(drop=True)
 
-    # Group IDs
+    # Sort by timestamp first so chunks are temporally ordered
+    time_col = "ts" if "ts" in df.columns else ("timestamp" if "timestamp" in df.columns else None)
+    if time_col:
+        df = df.sort_values(time_col).reset_index(drop=True)
+
+    # Group IDs — prefer IP-pair grouping; fall back to fixed-size chunks
     if "id.orig_h" in df.columns and "id.resp_h" in df.columns:
-        group_ids = df["id.orig_h"].astype(str) + "_" + df["id.resp_h"].astype(str)
+        group_ids = (df["id.orig_h"].astype(str) + "_" + df["id.resp_h"].astype(str)).values
+        print("Grouping by: id.orig_h + id.resp_h")
     elif "src_ip" in df.columns and "dst_ip" in df.columns:
-        group_ids = df["src_ip"].astype(str) + "_" + df["dst_ip"].astype(str)
+        group_ids = (df["src_ip"].astype(str) + "_" + df["dst_ip"].astype(str)).values
+        print("Grouping by: src_ip + dst_ip")
     else:
-        group_ids = np.array([f"row_{i}" for i in range(len(df))], dtype=object)
+        # No IP columns — create temporal chunks so each group has enough rows for sequences
+        chunk_size = 50
+        group_ids = np.arange(len(df)) // chunk_size
+        print(f"No IP columns found. Grouping by temporal chunks of {chunk_size} rows.")
 
     y = df["label"].values
 
@@ -112,14 +122,17 @@ def main():
 
     X_df = X_df.replace([np.inf, -np.inf], np.nan).fillna(0)
 
-    X_train_df, X_test_df, y_train, y_test, group_ids_train, group_ids_test = train_test_split(
-        X_df,
-        y,
-        group_ids,
-        test_size=cfg.test_size,
-        random_state=cfg.random_seed,
-        stratify=y
-    )
+    # Group-aware split: entire IP-pair groups go to either train or test,
+    # so sequences built within a group never span the train/test boundary.
+    gss = GroupShuffleSplit(n_splits=1, test_size=cfg.test_size, random_state=cfg.random_seed)
+    train_idx, test_idx = next(gss.split(X_df, y, groups=group_ids))
+
+    X_train_df      = X_df.iloc[train_idx]
+    X_test_df       = X_df.iloc[test_idx]
+    y_train         = y[train_idx]
+    y_test          = y[test_idx]
+    group_ids_train = group_ids[train_idx]
+    group_ids_test  = group_ids[test_idx]
 
     scaler = StandardScaler()
     X_train = scaler.fit_transform(X_train_df)

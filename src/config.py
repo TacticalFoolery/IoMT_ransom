@@ -25,7 +25,7 @@ class Config:
     input_dim: int = 50
 
     # Sequence settings
-    seq_len: int = 10
+    seq_len: int = 20
 
     # Autoencoder
     latent_dim: int = 32
@@ -44,7 +44,7 @@ class Config:
     dropout: float = 0.2
     clf_learning_rate: float = 0.001
     clf_batch_size: int = 64
-    clf_epochs: int = 30
+    clf_epochs: int = 15
 
     # Splits
     test_size: float = 0.2
@@ -52,8 +52,12 @@ class Config:
 
     # Model saving
     model_dir: str = "models"
-    autoencoder_model_path: str = "models/autoencoder.pt"
-    transformer_model_path: str = "models/mamba_classifier.pt"
+    autoencoder_model_path: str = "models/autoencoder.pt"         # legacy / default
+    ton_autoencoder_model_path: str = "models/autoencoder_ton.pt"
+    sim_autoencoder_model_path: str = "models/autoencoder_sim.pt"
+    ton_classifier_model_path: str = "models/mamba_classifier_ton.pt"
+    sim_classifier_model_path: str = "models/mamba_classifier_sim.pt"
+    transformer_model_path: str = "models/mamba_classifier.pt"    # legacy / default
     full_model_path: str = "models/full_model.pt"
 
     # Evaluation

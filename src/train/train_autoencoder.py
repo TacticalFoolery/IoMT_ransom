@@ -77,9 +77,12 @@ def main(dataset_name: str = "ton"):
         avg_loss = total_loss / len(loader)
         print(f"Epoch [{epoch + 1}/{cfg.ae_epochs}] Loss: {avg_loss:.6f}")
 
-    torch.save(model.state_dict(), cfg.autoencoder_model_path)
-    print(f"Autoencoder saved to: {cfg.autoencoder_model_path}")
+    save_path = cfg.ton_autoencoder_model_path if dataset_name.lower() == "ton" else cfg.sim_autoencoder_model_path
+    torch.save(model.state_dict(), save_path)
+    print(f"Autoencoder saved to: {save_path}")
 
 
 if __name__ == "__main__":
-    main("ton")
+    import sys
+    dataset = sys.argv[1] if len(sys.argv) > 1 else "ton"
+    main(dataset)

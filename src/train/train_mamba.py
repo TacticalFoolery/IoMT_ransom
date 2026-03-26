@@ -13,7 +13,6 @@ from src.models.mamba_classifier import MambaClassifier
 
 def extract_latent_and_error(model, X, device, batch_size=256):
 #Pass raw features through the autoencoder and return:
-#[latent vector || reconstruction error]
 
     model.eval()
     combined_features = []
@@ -56,7 +55,13 @@ def main(dataset_name="ton"):
 
     # Load group ids for grouped sequence creation
     group_ids_train = np.load(os.path.join(split_dir, "group_ids_train.npy"), allow_pickle=True)
-    group_ids_test = np.load(os.path.join(split_dir, "group_ids_test.npy"), allow_pickle=True)
+    group_ids_test  = np.load(os.path.join(split_dir, "group_ids_test.npy"),  allow_pickle=True)
+
+    # Diagnostic: show group size distribution
+    unique, counts = np.unique(group_ids_train, return_counts=True)
+    viable = np.sum(counts >= cfg.seq_len)
+    print(f"Train groups: {len(unique)} total, {viable} with >= {cfg.seq_len} rows (viable for sequences)")
+    print(f"Group sizes  — min: {counts.min()}, median: {int(np.median(counts))}, max: {counts.max()}")
 
     device = get_device()
     print("Using device:", device)
@@ -71,7 +76,8 @@ def main(dataset_name="ton"):
         latent_dim=cfg.latent_dim
     ).to(device)
 
-    ae.load_state_dict(torch.load(cfg.autoencoder_model_path, map_location=device))
+    ae_path = cfg.ton_autoencoder_model_path if dataset_name.lower() == "ton" else cfg.sim_autoencoder_model_path
+    ae.load_state_dict(torch.load(ae_path, map_location=device))
     ae.eval()
 
     # Extract latent features + reconstruction error
@@ -81,13 +87,19 @@ def main(dataset_name="ton"):
     print("Encoded training shape:", Z_train.shape)
     print("Encoded testing shape :", Z_test.shape)
 
-    # Build grouped sliding-window sequences
+    # Build grouped sliding-window sequences.
+    # label_mode="any": a window is labeled attack if any timestep in it is
+    # under attack. With device-level group splits (no row shuffling) this
+    # creates genuine early-detection windows where the last row is still
+    # near-normal but the sequence already contains the onset of the attack.
+    label_mode = "any" if dataset_name.lower() == "sim" else "last"
+
     train_dataset = ArraySequenceDataset(
         features=Z_train,
         labels=y_train,
         group_ids=group_ids_train,
         seq_len=cfg.seq_len,
-        label_mode="any"
+        label_mode=label_mode
     )
 
     test_dataset = ArraySequenceDataset(
@@ -95,7 +107,7 @@ def main(dataset_name="ton"):
         labels=y_test,
         group_ids=group_ids_test,
         seq_len=cfg.seq_len,
-        label_mode="any"
+        label_mode=label_mode
     )
 
     train_loader = DataLoader(train_dataset, batch_size=cfg.clf_batch_size, shuffle=True)
@@ -138,9 +150,12 @@ def main(dataset_name="ton"):
         print(f"Epoch [{epoch + 1}/{cfg.clf_epochs}] Loss: {avg_loss:.6f}")
 
     # Save classifier
-    torch.save(model.state_dict(), cfg.transformer_model_path)
-    print(f"Mamba classifier saved to: {cfg.transformer_model_path}")
+    clf_path = cfg.ton_classifier_model_path if dataset_name.lower() == "ton" else cfg.sim_classifier_model_path
+    torch.save(model.state_dict(), clf_path)
+    print(f"Mamba classifier saved to: {clf_path}")
 
 
 if __name__ == "__main__":
-    main("ton")   # change to "sim" when training on simulated ICU data
+    import sys
+    dataset = sys.argv[1] if len(sys.argv) > 1 else "ton"
+    main(dataset)
