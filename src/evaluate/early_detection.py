@@ -1,6 +1,6 @@
 """
 Early Detection Analysis
-========================
+
 Measures how quickly Mamba vs a per-row LR baseline detects a ransomware
 attack after it begins on each ICU device.
 
@@ -8,11 +8,6 @@ Detection is defined as: the first sliding-window sequence that the model
 classifies as an attack.  For Mamba this window spans seq_len=20 rows; for
 LR the "window" is just the last row (same as per-row inference).
 
-Outputs
--------
-- Per-device detection lag (timesteps after attack_start)
-- Cumulative detection rate over time (text table + ASCII chart)
-- Mean / median detection lag comparison
 """
 
 import os
@@ -88,7 +83,7 @@ def main():
     group_ids_train = np.load(os.path.join(split_dir, "group_ids_train.npy"), allow_pickle=True)
     group_ids_test  = np.load(os.path.join(split_dir, "group_ids_test.npy"),  allow_pickle=True)
 
-    # --- load models ---
+    # load models
     ae = Autoencoder(
         input_dim=X_train.shape[1],
         hidden_dim1=cfg.ae_hidden_dim1,
@@ -111,7 +106,7 @@ def main():
     Z_train = extract_latent_and_error(ae, X_train, device)
     Z_test  = extract_latent_and_error(ae, X_test,  device)
 
-    # --- train LR on last-row features of training sequences ---
+    # train LR on last-row features of training sequences
     unique_train, inv_train = np.unique(group_ids_train, return_inverse=True)
     train_last, train_labels = [], []
     for gi in range(len(unique_train)):
@@ -128,7 +123,7 @@ def main():
     lr = LogisticRegression(max_iter=1000, random_state=cfg.random_seed)
     lr.fit(np.vstack(train_last), np.concatenate(train_labels))
 
-    # --- per-device early detection on test set ---
+    # per-device early detection on test set
     unique_test, inv_test = np.unique(group_ids_test, return_inverse=True)
 
     mamba_lags, lr_lags = [], []
@@ -154,13 +149,13 @@ def main():
 
         windows = sliding_windows(Z_dev, seq_len)   # (W, seq_len, F)
 
-        # --- Mamba inference ---
+        # Mamba inference
         X_tensor = torch.tensor(windows, dtype=torch.float32).to(device)
         with torch.no_grad():
             logits = mamba(X_tensor)
             mamba_preds = (torch.sigmoid(logits) >= cfg.threshold).cpu().numpy().astype(int)
 
-        # --- LR inference (last row of each window) ---
+        # LR inference (last row of each window)
         last_rows = windows[:, -1, :]
         lr_preds  = lr.predict(last_rows)
 
@@ -190,7 +185,7 @@ def main():
             else:
                 lr_lags.append(lag)
 
-    # --- summary statistics ---
+    # summary statistics
     print(f"\nAttacked devices in test set : {n_attacked}")
     print(f"Mamba  — detected: {len(mamba_lags)}/{n_attacked}, missed: {mamba_missed}")
     print(f"LR     — detected: {len(lr_lags)}/{n_attacked},    missed: {lr_missed}")
@@ -209,7 +204,7 @@ def main():
         print(f"  Min    : {np.min(lr_lags)}")
         print(f"  Max    : {np.max(lr_lags)}")
 
-    # --- cumulative detection rate over time ---
+    # cumulative detection rate over time
     max_steps = 100
     steps = list(range(0, max_steps + 1, 5))
     mamba_cum, lr_cum = [], []

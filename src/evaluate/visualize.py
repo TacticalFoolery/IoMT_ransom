@@ -1,8 +1,8 @@
 """
-Generates all thesis figures and saves them to results/figures/.
+Generates all figures and saves them to results/figures/.
 
 Figures produced
-----------------
+
 1. roc_curves.png         — ROC curves: Mamba vs LR on both datasets
 2. confusion_matrices.png — Confusion matrix heatmaps (sim dataset)
 3. early_detection.png    — Cumulative detection rate vs steps after attack onset
@@ -39,9 +39,9 @@ STYLE = {
 }
 
 
-# ---------------------------------------------------------------------------
+
 # Helpers
-# ---------------------------------------------------------------------------
+
 
 def extract_latent_and_error(ae, X, device, batch_size=256):
     ae.eval()
@@ -100,9 +100,9 @@ def sliding_windows(Z, seq_len):
     return Z[idx]
 
 
-# ---------------------------------------------------------------------------
+
 # Figure 1 — ROC curves
-# ---------------------------------------------------------------------------
+
 
 def plot_roc_curves(results, out_path):
     fig, axes = plt.subplots(1, 2, figsize=(12, 5))
@@ -132,9 +132,9 @@ def plot_roc_curves(results, out_path):
     print(f"  Saved: {out_path}")
 
 
-# ---------------------------------------------------------------------------
+
 # Figure 2 — Confusion matrices
-# ---------------------------------------------------------------------------
+
 
 def plot_confusion_matrices(cm_data, out_path):
     fig, axes = plt.subplots(1, 2, figsize=(10, 4))
@@ -168,9 +168,9 @@ def plot_confusion_matrices(cm_data, out_path):
     print(f"  Saved: {out_path}")
 
 
-# ---------------------------------------------------------------------------
+
 # Figure 3 — Early detection timeline
-# ---------------------------------------------------------------------------
+
 
 def plot_early_detection(mamba_lags, lr_lags, n_attacked, out_path):
     max_steps = 60
@@ -217,9 +217,9 @@ def plot_early_detection(mamba_lags, lr_lags, n_attacked, out_path):
     print(f"  Saved: {out_path}")
 
 
-# ---------------------------------------------------------------------------
+
 # Figure 4 — Metrics comparison bar chart
-# ---------------------------------------------------------------------------
+
 
 def plot_metrics_comparison(metrics_data, out_path):
     metric_names = ["Accuracy", "Precision", "Recall", "F1 Score", "AUC-ROC"]
@@ -260,9 +260,9 @@ def plot_metrics_comparison(metrics_data, out_path):
     print(f"  Saved: {out_path}")
 
 
-# ---------------------------------------------------------------------------
+
 # Main
-# ---------------------------------------------------------------------------
+
 
 def main():
     cfg = Config()
@@ -339,7 +339,7 @@ def main():
             "lr":    make_metrics(y_true, lr_pred,    lr_prob),
         }
 
-    # --- early detection data (re-compute using sim models) ---
+    # early detection data (re-compute using sim models)
     print("\nComputing early detection lags...")
     splits   = load_split(cfg.sim_splits_path)
     ae = Autoencoder(
@@ -413,7 +413,7 @@ def main():
         if ll is not None:
             lr_lags.append(ll)
 
-    # --- generate figures ---
+    # generate figures
     print("\nGenerating figures...")
     plot_roc_curves(roc_results,                              os.path.join(FIG_DIR, "roc_curves.png"))
     plot_confusion_matrices(cm_data,                          os.path.join(FIG_DIR, "confusion_matrices.png"))

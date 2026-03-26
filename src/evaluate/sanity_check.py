@@ -102,7 +102,7 @@ def main(dataset_name="ton"):
     )
 
     # Extract last-row features and sequence labels from each sequence
-    # Shape: (N, seq_len, features) → take [:, -1, :] for last row
+    # Shape: (N, seq_len, features) ; take [:, -1, :] for last row
     X_train_last = train_dataset.samples[:, -1, :].numpy()   # (N_train, F)
     X_test_last  = test_dataset.samples[:,  -1, :].numpy()   # (N_test,  F)
     y_train_seq  = train_dataset.labels.numpy()

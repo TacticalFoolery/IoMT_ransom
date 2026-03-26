@@ -56,6 +56,8 @@ def main(dataset_name: str = "ton"):
     criterion = nn.MSELoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=cfg.ae_learning_rate)
 
+    epoch_losses = []
+
     for epoch in range(cfg.ae_epochs):
         model.train()
         total_loss = 0.0
@@ -75,11 +77,17 @@ def main(dataset_name: str = "ton"):
             total_loss += loss.item()
 
         avg_loss = total_loss / len(loader)
+        epoch_losses.append(avg_loss)
         print(f"Epoch [{epoch + 1}/{cfg.ae_epochs}] Loss: {avg_loss:.6f}")
 
     save_path = cfg.ton_autoencoder_model_path if dataset_name.lower() == "ton" else cfg.sim_autoencoder_model_path
     torch.save(model.state_dict(), save_path)
     print(f"Autoencoder saved to: {save_path}")
+
+    os.makedirs(cfg.loss_dir, exist_ok=True)
+    loss_path = os.path.join(cfg.loss_dir, f"ae_{dataset_name}_losses.npy")
+    np.save(loss_path, np.array(epoch_losses))
+    print(f"Loss history saved to: {loss_path}")
 
 
 if __name__ == "__main__":

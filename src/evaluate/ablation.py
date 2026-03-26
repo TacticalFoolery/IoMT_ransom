@@ -1,16 +1,3 @@
-"""
-Ablation Study
-==============
-Compares three levels of the framework on both datasets:
-
-  1. AE only        — reconstruction error thresholded at mean + 2*std of
-                      training benign errors (no classifier)
-  2. AE + LR        — logistic regression on last-row latent features
-                      (per-row baseline, no sequence context)
-  3. AE + Mamba     — full proposed framework (sequence classifier)
-
-Metrics: Accuracy, Precision, Recall, F1, AUC-ROC
-"""
 
 import os
 import numpy as np
@@ -31,11 +18,10 @@ from src.utils import set_seed, get_device
 from src.datasets.sequence_dataset import ArraySequenceDataset
 from src.models.autoencoder import Autoencoder
 from src.models.mamba_classifier import MambaClassifier
+from src.models.lstm_classifier import LSTMClassifier
 
 
-# ---------------------------------------------------------------------------
 # Helpers
-# ---------------------------------------------------------------------------
 
 def encode(ae, X, device, batch_size=256):
     ae.eval()
@@ -79,20 +65,21 @@ def plot_ablation(all_results, out_path):
     three bars per group (AE Only / AE+LR / AE+Mamba).
     """
     metric_names = ["Accuracy", "Precision", "Recall", "F1", "AUC-ROC"]
-    model_names  = ["AE Only", "AE + LR", "AE + Mamba"]
-    colors       = ["#059669", "#DC2626", "#2563EB"]
+    model_names  = ["AE Only", "AE + LR", "AE + LSTM", "AE + Mamba"]
+    colors       = ["#059669", "#DC2626", "#F59E0B", "#2563EB"]
 
     fig, axes = plt.subplots(1, 2, figsize=(14, 6), sharey=False)
     fig.suptitle("Ablation Study: Framework Component Contribution",
                  fontsize=14, fontweight="bold")
 
     x     = np.arange(len(metric_names))
-    width = 0.25
+    width = 0.20
 
     for ax, (ds_label, ds_results) in zip(axes, all_results.items()):
-        for i, (model_name, color) in enumerate(zip(model_names, colors)):
+        offsets = [-1.5, -0.5, 0.5, 1.5]
+        for i, (model_name, color, offset) in enumerate(zip(model_names, colors, offsets)):
             vals = [ds_results[model_name][m] for m in metric_names]
-            bars = ax.bar(x + (i - 1) * width, vals, width,
+            bars = ax.bar(x + offset * width, vals, width,
                           label=model_name, color=color, alpha=0.85)
             for bar in bars:
                 h = bar.get_height()
@@ -118,7 +105,7 @@ def plot_ablation(all_results, out_path):
 
 def print_ablation_table(dataset_label, results):
     cols   = ["Accuracy", "Precision", "Recall", "F1", "AUC-ROC"]
-    models = ["AE Only", "AE + LR", "AE + Mamba"]
+    models = ["AE Only", "AE + LR", "AE + LSTM", "AE + Mamba"]
     width  = 11
 
     print(f"\n{'='*65}")
@@ -136,9 +123,7 @@ def print_ablation_table(dataset_label, results):
     print(f"{'='*65}\n")
 
 
-# ---------------------------------------------------------------------------
 # Main
-# ---------------------------------------------------------------------------
 
 def main():
     cfg    = Config()
@@ -150,12 +135,14 @@ def main():
             "split_dir":  cfg.ton_splits_path,
             "ae_path":    cfg.ton_autoencoder_model_path,
             "clf_path":   cfg.ton_classifier_model_path,
+            "lstm_path":  cfg.ton_lstm_model_path,
             "label_mode": "last",
         },
         "Simulated ICU": {
             "split_dir":  cfg.sim_splits_path,
             "ae_path":    cfg.sim_autoencoder_model_path,
             "clf_path":   cfg.sim_classifier_model_path,
+            "lstm_path":  cfg.sim_lstm_model_path,
             "label_mode": "any",
         },
     }
@@ -188,7 +175,7 @@ def main():
         Z_train, err_train = encode(ae, X_train, device)
         Z_test,  err_test  = encode(ae, X_test,  device)
 
-        # ---- 1. AE Only — threshold on reconstruction error ----
+        # 1. AE Only — threshold on reconstruction error
         # threshold = mean + 2*std of benign training errors
         benign_err = err_train[y_train == 0]
         threshold  = benign_err.mean() + 2 * benign_err.std()
@@ -198,7 +185,7 @@ def main():
         test_ds  = ArraySequenceDataset(Z_test,  y_test,  group_ids_test,  cfg.seq_len, label_mode)
 
         # AE-only: use mean reconstruction error of last row across the sequence
-        # (last-row recon error as the anomaly score per sequence)
+        # lastrow recon error as the anomaly score per sequence
         ae_scores = err_test[
             [int(test_ds.samples[i, -1, :].sum() * 0)   # placeholder index lookup
              for i in range(len(test_ds))]
@@ -212,7 +199,7 @@ def main():
 
         ae_metrics = metrics(ae_labels, ae_pred, ae_scores)
 
-        # ---- 2. AE + LR ----
+        # 2. AE + LR
         X_tr_last = train_ds.samples[:, -1, :].numpy()
         y_tr_seq  = train_ds.labels.numpy()
         X_te_last = test_ds.samples[:,  -1, :].numpy()
@@ -224,7 +211,7 @@ def main():
 
         lr_metrics = metrics(ae_labels, lr_pred, lr_prob)
 
-        # ---- 3. AE + Mamba ----
+        # 3. AE + Mamba
         mamba = MambaClassifier(
             input_dim=cfg.latent_dim + 1,
             d_model=cfg.d_model,
@@ -239,16 +226,32 @@ def main():
 
         mamba_metrics = metrics(mamba_labels, mamba_pred, mamba_prob)
 
-        # ---- print table ----
+        # 4. AE + LSTM
+        lstm = LSTMClassifier(
+            input_dim=cfg.latent_dim + 1,
+            hidden_dim=cfg.d_model,
+            num_layers=cfg.num_layers,
+            dropout=cfg.dropout,
+        ).to(device)
+        lstm.load_state_dict(torch.load(ds_cfg["lstm_path"], map_location=device))
+        lstm.eval()
+
+        lstm_prob, lstm_labels = run_mamba(lstm, test_ds, cfg, device)  # same inference fn
+        lstm_pred = (lstm_prob >= cfg.threshold).astype(int)
+
+        lstm_metrics = metrics(lstm_labels, lstm_pred, lstm_prob)
+
+        # print table
         ds_results = {
             "AE Only":    ae_metrics,
             "AE + LR":    lr_metrics,
+            "AE + LSTM":  lstm_metrics,
             "AE + Mamba": mamba_metrics,
         }
         print_ablation_table(ds_label, ds_results)
         all_results[ds_label] = ds_results
 
-    # ---- save figure ----
+    # save figure
     print("Generating ablation figure...")
     plot_ablation(all_results, os.path.join(FIG_DIR, "ablation.png"))
 
