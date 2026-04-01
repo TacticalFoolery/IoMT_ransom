@@ -14,6 +14,10 @@ Statistic = (|n01 - n10| - 1)^2 / (n01 + n10)   [continuity-corrected]
 Distributed as chi2(1) under the null hypothesis that both models have the
 same error rate.
 
+For the simulated ICU dataset (multi-class), all model predictions are
+collapsed to binary (attack detected vs normal) so the test measures detection
+ability consistently across all models.
+
 Comparisons run (for each dataset):
   Mamba vs LR
   Mamba vs LSTM
@@ -36,7 +40,7 @@ from src.models.mamba_classifier import MambaClassifier
 from src.models.lstm_classifier import LSTMClassifier
 
 
-# helpers 
+# helpers
 
 def encode(ae, X, device, batch_size=256):
     ae.eval()
@@ -52,15 +56,22 @@ def encode(ae, X, device, batch_size=256):
 
 
 def run_seq_model(model, dataset, cfg, device):
+    """Returns (predictions, labels).
+    Binary models: sigmoid >= threshold. Multi-class: argmax.
+    """
     loader = DataLoader(dataset, batch_size=cfg.clf_batch_size, shuffle=False)
-    probs, labels = [], []
+    preds, labels = [], []
     model.eval()
     with torch.no_grad():
         for X_b, y_b in loader:
             logits = model(X_b.to(device))
-            probs.append(torch.sigmoid(logits).cpu().numpy())
+            if logits.dim() == 1:  # binary
+                p = (torch.sigmoid(logits) >= cfg.threshold).cpu().numpy().astype(int)
+            else:  # multi-class
+                p = torch.argmax(logits, dim=1).cpu().numpy().astype(int)
+            preds.append(p)
             labels.append(y_b.numpy())
-    return np.concatenate(probs), np.concatenate(labels)
+    return np.concatenate(preds), np.concatenate(labels)
 
 
 def mcnemar_test(pred_a, pred_b, y_true):
@@ -108,7 +119,7 @@ def print_mcnemar_table(dataset_label, results):
     print(f"{'='*75}")
 
 
-# main 
+# main
 
 def main():
     cfg = Config()
@@ -118,26 +129,30 @@ def main():
 
     datasets = {
         "TON-IoT": {
-            "split_dir":  cfg.ton_splits_path,
-            "ae_path":    cfg.ton_autoencoder_model_path,
-            "clf_path":   cfg.ton_classifier_model_path,
-            "lstm_path":  cfg.ton_lstm_model_path,
-            "label_mode": "last",
+            "split_dir":   cfg.ton_splits_path,
+            "ae_path":     cfg.ton_autoencoder_model_path,
+            "clf_path":    cfg.ton_classifier_model_path,
+            "lstm_path":   cfg.ton_lstm_model_path,
+            "label_mode":  "last",
+            "num_classes": 1,
         },
         "Simulated ICU": {
-            "split_dir":  cfg.sim_splits_path,
-            "ae_path":    cfg.sim_autoencoder_model_path,
-            "clf_path":   cfg.sim_classifier_model_path,
-            "lstm_path":  cfg.sim_lstm_model_path,
-            "label_mode": "any",
+            "split_dir":   cfg.sim_splits_path,
+            "ae_path":     cfg.sim_autoencoder_model_path,
+            "clf_path":    cfg.sim_classifier_model_path,
+            "lstm_path":   cfg.sim_lstm_model_path,
+            "label_mode":  "max",
+            "num_classes": cfg.sim_num_classes,
         },
     }
 
     for ds_label, ds_cfg in datasets.items():
         print(f"\nLoading {ds_label}...")
 
-        split_dir  = ds_cfg["split_dir"]
-        label_mode = ds_cfg["label_mode"]
+        split_dir   = ds_cfg["split_dir"]
+        label_mode  = ds_cfg["label_mode"]
+        is_sim      = ds_label == "Simulated ICU"
+        num_classes = ds_cfg["num_classes"]
 
         X_train         = np.load(os.path.join(split_dir, "X_train.npy"))
         X_test          = np.load(os.path.join(split_dir, "X_test.npy"))
@@ -174,52 +189,59 @@ def main():
             d_model=cfg.d_model,
             n_layers=cfg.num_layers,
             dropout=cfg.dropout,
+            num_classes=num_classes,
         ).to(device)
         mamba.load_state_dict(torch.load(ds_cfg["clf_path"], map_location=device))
         mamba.eval()
-        mamba_prob, _ = run_seq_model(mamba, test_ds, cfg, device)
-        mamba_pred    = (mamba_prob >= cfg.threshold).astype(int)
+        mamba_pred, _ = run_seq_model(mamba, test_ds, cfg, device)
 
-        # LSTM
+        # ── LSTM ──────────────────────────────────────────────────────────────
         lstm = LSTMClassifier(
             input_dim=cfg.latent_dim + 1,
             hidden_dim=cfg.d_model,
             num_layers=cfg.num_layers,
             dropout=cfg.dropout,
+            num_classes=num_classes,
         ).to(device)
         lstm.load_state_dict(torch.load(ds_cfg["lstm_path"], map_location=device))
         lstm.eval()
-        lstm_prob, _ = run_seq_model(lstm, test_ds, cfg, device)
-        lstm_pred    = (lstm_prob >= cfg.threshold).astype(int)
+        lstm_pred, _ = run_seq_model(lstm, test_ds, cfg, device)
 
-        # LR (last row of each sequence)
+        # ── LR (last row of each sequence) ────────────────────────────────────
         X_tr_last = train_ds.samples[:, -1, :].numpy()
         y_tr_seq  = train_ds.labels.numpy()
         X_te_last = test_ds.samples[:,  -1, :].numpy()
 
         lr = LogisticRegression(max_iter=1000, random_state=cfg.random_seed)
         lr.fit(X_tr_last, y_tr_seq)
-        lr_prob = lr.predict_proba(X_te_last)[:, 1]
-        lr_pred = (lr_prob >= cfg.threshold).astype(int)
+        lr_pred = lr.predict(X_te_last)
 
-        # AE-only (threshold on reconstruction error of last row)
-        benign_err  = err_train[y_train == 0]
+        # ── AE-only (threshold on reconstruction error of last row) ───────────
+        benign_err   = err_train[y_train == 0]
         ae_threshold = benign_err.mean() + 2 * benign_err.std()
-        ae_scores   = test_ds.samples[:, -1, -1].numpy()   # last row, last feature = recon error
-        ae_pred     = (ae_scores >= ae_threshold).astype(int)
+        ae_scores    = test_ds.samples[:, -1, -1].numpy()   # last row, last feature = recon error
+        ae_pred      = (ae_scores >= ae_threshold).astype(int)
 
-        # run McNemar's tests
-        n = len(y_seq)
+        # ── Collapse to binary for McNemar (detection task: attack vs normal) ──
+        # All models are compared on whether they correctly detect ANY attack,
+        # regardless of variant. This is fair since AE-only cannot classify variants.
+        y_true_binary = (y_seq       > 0).astype(int) if is_sim else y_seq.astype(int)
+        mamba_binary  = (mamba_pred  > 0).astype(int) if is_sim else mamba_pred.astype(int)
+        lstm_binary   = (lstm_pred   > 0).astype(int) if is_sim else lstm_pred.astype(int)
+        lr_binary     = (lr_pred     > 0).astype(int) if is_sim else lr_pred.astype(int)
+
+        # ── run McNemar's tests ───────────────────────────────────────────────
+        n = len(y_true_binary)
         comparisons = [
-            ("Mamba vs LR",       mamba_pred, lr_pred),
-            ("Mamba vs LSTM",     mamba_pred, lstm_pred),
-            ("Mamba vs AE-only",  mamba_pred, ae_pred),
-            ("LSTM  vs LR",       lstm_pred,  lr_pred),
+            ("Mamba vs LR",       mamba_binary, lr_binary),
+            ("Mamba vs LSTM",     mamba_binary, lstm_binary),
+            ("Mamba vs AE-only",  mamba_binary, ae_pred),
+            ("LSTM  vs LR",       lstm_binary,  lr_binary),
         ]
 
         rows = []
         for label, pred_a, pred_b in comparisons:
-            stat, p, n01, n10 = mcnemar_test(pred_a, pred_b, y_seq)
+            stat, p, n01, n10 = mcnemar_test(pred_a, pred_b, y_true_binary)
             rows.append((label, stat, p, n01, n10, n))
 
         print_mcnemar_table(ds_label, rows)

@@ -65,6 +65,10 @@ class Config:
     transformer_model_path: str = "models/mamba_classifier.pt"    # legacy / default
     full_model_path: str = "models/full_model.pt"
 
+    # Simulated dataset: 5 classes (0=normal, 1=encryption_heavy,
+    # 2=exfiltration_first, 3=wiper, 4=slow_burn)
+    sim_num_classes: int = 5
+
     # Evaluation
     threshold: float = 0.5
 

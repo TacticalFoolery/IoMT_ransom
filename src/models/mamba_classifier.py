@@ -88,9 +88,11 @@ class MambaClassifier(nn.Module):
         d_model: int = 64,
         n_layers: int = 2,
         dropout: float = 0.2,
+        num_classes: int = 1,
     ):
         super().__init__()
 
+        self.num_classes = num_classes
         self.input_projection = nn.Linear(input_dim, d_model)
 
         self.mamba_layers = nn.ModuleList([
@@ -103,7 +105,7 @@ class MambaClassifier(nn.Module):
             nn.Linear(d_model, 64),
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(64, 1),
+            nn.Linear(64, num_classes),
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -115,4 +117,8 @@ class MambaClassifier(nn.Module):
 
         x = x.mean(dim=1)
         x = self.dropout(x)
-        return self.classifier(x).squeeze(1)
+        out = self.classifier(x)
+        # Binary mode: squeeze to (B,) for BCEWithLogitsLoss compatibility
+        if self.num_classes == 1:
+            return out.squeeze(1)
+        return out

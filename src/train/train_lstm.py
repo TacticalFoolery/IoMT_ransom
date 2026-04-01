@@ -65,7 +65,9 @@ def main(dataset_name="ton"):
     print("Encoded training shape:", Z_train.shape)
     print("Encoded testing shape :", Z_test.shape)
 
-    label_mode = "any" if dataset_name.lower() == "sim" else "last"
+    is_sim = dataset_name.lower() == "sim"
+    label_mode = "max" if is_sim else "last"
+    num_classes = cfg.sim_num_classes if is_sim else 1
 
     train_dataset = ArraySequenceDataset(
         features=Z_train, labels=y_train,
@@ -86,9 +88,10 @@ def main(dataset_name="ton"):
         hidden_dim=cfg.d_model,
         num_layers=cfg.num_layers,
         dropout=cfg.dropout,
+        num_classes=num_classes,
     ).to(device)
 
-    criterion = nn.BCEWithLogitsLoss()
+    criterion = nn.CrossEntropyLoss() if is_sim else nn.BCEWithLogitsLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=cfg.clf_learning_rate)
 
     epoch_losses = []
@@ -100,6 +103,8 @@ def main(dataset_name="ton"):
         for X_batch, y_batch in train_loader:
             X_batch = X_batch.to(device)
             y_batch = y_batch.to(device)
+            if is_sim:
+                y_batch = y_batch.long()
 
             optimizer.zero_grad()
             logits = model(X_batch)

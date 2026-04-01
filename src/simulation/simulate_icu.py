@@ -34,7 +34,6 @@ DEVICE_VITALS = {
 }
 
 # System-level feature baselines
-
 SYS_BASELINES = {
     "cpu":           20.0,
     "memory":        35.0,
@@ -62,38 +61,108 @@ SYS_NOISE = {
     "entropy":        0.35,
 }
 
-# Attack drift per timestep as a fraction of the noise scale.
-# drift/noise ≈ 0.08  →  SNR at one step ≈ 0.08  (ambiguous)
-# Over seq_len=10 steps cumulative drift ≈ 0.8 × noise  (trend visible)
-SYS_DRIFT = {
-    "cpu":            0.09,
-    "memory":         0.07,
-    "disk_write":     0.18,   # encryption → heavy writes
-    "disk_read":      0.04,
-    "net_out":        0.11,   # C2 exfiltration
-    "net_in":         0.03,
-    "packet_rate":    0.09,
-    "response_time":  0.14,   # device slows down
-    "data_rate":      0.11,
-    "entropy":        0.06,   # encrypted data raises entropy slowly
+# ── Ransomware variant definitions ──────────────────────────────────────────
+# Label 0 = normal (no attack)
+# Label 1 = encryption_heavy  — WannaCry / Ryuk style: encrypt-in-place
+# Label 2 = exfiltration_first — Maze / REvil style: steal data, then encrypt
+# Label 3 = wiper             — NotPetya style: overwrite / destroy data
+# Label 4 = slow_burn         — LockBit stealth: low-and-slow, hard to detect
+
+VARIANTS = {
+    "encryption_heavy":   1,
+    "exfiltration_first": 2,
+    "wiper":              3,
+    "slow_burn":          4,
 }
 
-# Vital drift fraction (device degrading under attack)
-VITAL_DRIFT = -0.025
+# Per-variant drift per timestep as a fraction of SYS_NOISE.
+# drift/noise ≈ 0.08 → SNR at one step ≈ 0.08 (ambiguous);
+# over seq_len=20 steps the cumulative trend becomes visible.
+VARIANT_DRIFT = {
+    "encryption_heavy": {
+        "cpu":           0.14,
+        "memory":        0.10,
+        "disk_write":    0.35,   # primary: heavy in-place encryption writes
+        "disk_read":     0.05,
+        "net_out":       0.08,   # C2 check-in / key exchange
+        "net_in":        0.02,
+        "packet_rate":   0.07,
+        "response_time": 0.18,   # device slows under encryption load
+        "data_rate":     0.08,
+        "entropy":       0.12,   # encrypted files drive entropy up strongly
+    },
+    "exfiltration_first": {      # phase-1 (exfiltration) drift
+        "cpu":           0.09,
+        "memory":        0.08,
+        "disk_write":    0.06,
+        "disk_read":     0.16,   # reading files to stage for exfiltration
+        "net_out":       0.28,   # primary: massive outbound data theft
+        "net_in":        0.04,
+        "packet_rate":   0.18,
+        "response_time": 0.08,
+        "data_rate":     0.22,
+        "entropy":       0.03,   # raw data — entropy not elevated yet
+    },
+    "wiper": {
+        "cpu":           0.16,
+        "memory":        0.09,
+        "disk_write":    0.30,   # overwriting disk sectors destructively
+        "disk_read":     0.20,   # scanning filesystem before overwrite
+        "net_out":       0.04,
+        "net_in":        0.02,
+        "packet_rate":   0.05,
+        "response_time": 0.28,   # device degrades extremely fast
+        "data_rate":     0.06,
+        "entropy":       0.01,   # writing zeros / fixed patterns → low entropy
+    },
+    "slow_burn": {
+        "cpu":           0.03,   # barely perceptible above noise floor
+        "memory":        0.03,
+        "disk_write":    0.06,
+        "disk_read":     0.02,
+        "net_out":       0.04,
+        "net_in":        0.01,
+        "packet_rate":   0.03,
+        "response_time": 0.05,
+        "data_rate":     0.04,
+        "entropy":       0.04,   # very slow entropy climb
+    },
+}
+
+# Phase-2 drift for exfiltration_first: switches to encryption after midpoint
+EXFIL_PHASE2_DRIFT = {
+    "cpu":           0.12,
+    "memory":        0.09,
+    "disk_write":    0.28,   # encryption begins
+    "disk_read":     0.04,
+    "net_out":       0.06,   # exfil traffic drops off
+    "net_in":        0.02,
+    "packet_rate":   0.06,
+    "response_time": 0.15,
+    "data_rate":     0.07,
+    "entropy":       0.10,   # entropy climbs as files are encrypted
+}
+
+# How fast device vitals degrade per variant
+VARIANT_VITAL_DRIFT = {
+    "encryption_heavy":   -0.025,
+    "exfiltration_first": -0.015,
+    "wiper":              -0.060,   # catastrophic, device becomes non-functional fast
+    "slow_burn":          -0.008,   # barely detectable degradation
+}
 
 
 def generate_device_timeline(
     device_id: str,
     device_type: str,
     n_timesteps: int,
-    attack: bool,
+    attack_variant: str | None,
     attack_start: int,
     rng: np.random.Generator,
 ) -> pd.DataFrame:
 
     v = DEVICE_VITALS[device_type]
 
-    # Current state for AR(1) dynamics
     state = {**SYS_BASELINES,
              "vital_1": v["vital_1"][0],
              "vital_2": v["vital_2"][0],
@@ -105,33 +174,47 @@ def generate_device_timeline(
 
     AR = 0.88   # mean-reversion coefficient for normal behaviour
 
+    attack_duration = n_timesteps - attack_start
+
     rows = []
 
     for t in range(n_timesteps):
-        in_attack = attack and (t >= attack_start)
+        in_attack = attack_variant is not None and (t >= attack_start)
 
-        # continuous system features
+        if in_attack:
+            if attack_variant == "exfiltration_first":
+                # Switch from exfiltration to encryption at the midpoint
+                phase2_start = attack_start + attack_duration // 2
+                drift_profile = EXFIL_PHASE2_DRIFT if t >= phase2_start else VARIANT_DRIFT["exfiltration_first"]
+            else:
+                drift_profile = VARIANT_DRIFT[attack_variant]
+            vital_drift = VARIANT_VITAL_DRIFT[attack_variant]
+        else:
+            drift_profile = None
+            vital_drift   = 0.0
+
+        # Continuous system features
         new_state = {}
         for key in SYS_BASELINES:
             noise = rng.normal(0.0, SYS_NOISE[key])
             if in_attack:
-                drift = SYS_DRIFT[key] * SYS_NOISE[key]
+                drift = drift_profile[key] * SYS_NOISE[key]
                 new_state[key] = state[key] + drift + noise * 0.75
             else:
                 new_state[key] = AR * state[key] + (1 - AR) * SYS_BASELINES[key] + noise
 
-        # vital parameters
+        # Vital parameters
         for vk in ("vital_1", "vital_2", "vital_3"):
             noise = rng.normal(0.0, vital_noise[vk])
             if in_attack:
-                drift = VITAL_DRIFT * vital_noise[vk]
+                drift = vital_drift * vital_noise[vk]
                 new_state[vk] = state[vk] + drift + noise * 0.75
             else:
                 new_state[vk] = AR * state[vk] + (1 - AR) * v[vk][0] + noise
 
         state = new_state
 
-        # discrete / count features (Poisson)
+        # Discrete / count features (Poisson)
         steps_into_attack = max(0, t - attack_start) if in_attack else 0
         ramp = min(1.0, steps_into_attack / 150.0)   # slow ramp over 150 steps
 
@@ -147,15 +230,15 @@ def generate_device_timeline(
         connection_count   = max(0, int(rng.normal(conn_mean, 1.5)))
         process_count      = max(1, int(rng.normal(proc_mean, 2.0)))
 
-        # write-to-read ratio: rises during encryption phase
         io_ratio = max(0.01, state["disk_write"] / max(0.1, state["disk_read"]))
 
-        label = 1 if in_attack else 0
+        label = VARIANTS[attack_variant] if in_attack else 0
 
         rows.append({
             "timestamp":           t,
             "device_id":           device_id,
             "device_type":         device_type,
+            "attack_variant":      attack_variant if attack_variant is not None else "normal",
             "cpu_usage":           round(float(np.clip(state["cpu"],           0, 100)), 3),
             "memory_usage":        round(float(np.clip(state["memory"],        0, 100)), 3),
             "disk_write_rate":     round(float(max(0, state["disk_write"])),            3),
@@ -193,22 +276,35 @@ def main():
     n_timesteps        = 500    # 500 timesteps per device
     attack_start       = 200    # attack begins at t=200 (200 pre-attack, 300 attack)
 
+    variant_names = list(VARIANTS.keys())   # cycle order for attacked devices
     all_dfs = []
 
     for device_type in device_types:
         for i in range(n_devices_per_type):
-            for attacked in (False, True):
-                tag    = "attack" if attacked else "normal"
-                dev_id = f"{device_type}_{tag}_{i}"
-                df = generate_device_timeline(
-                    device_id=dev_id,
-                    device_type=device_type,
-                    n_timesteps=n_timesteps,
-                    attack=attacked,
-                    attack_start=attack_start,
-                    rng=rng,
-                )
-                all_dfs.append(df)
+            # Normal device
+            dev_id = f"{device_type}_normal_{i}"
+            df = generate_device_timeline(
+                device_id=dev_id,
+                device_type=device_type,
+                n_timesteps=n_timesteps,
+                attack_variant=None,
+                attack_start=attack_start,
+                rng=rng,
+            )
+            all_dfs.append(df)
+
+            # Attacked device — cycle through variants
+            variant = variant_names[i % len(variant_names)]
+            dev_id  = f"{device_type}_attack_{variant}_{i}"
+            df = generate_device_timeline(
+                device_id=dev_id,
+                device_type=device_type,
+                n_timesteps=n_timesteps,
+                attack_variant=variant,
+                attack_start=attack_start,
+                rng=rng,
+            )
+            all_dfs.append(df)
 
     combined = pd.concat(all_dfs, ignore_index=True)
 
@@ -216,11 +312,13 @@ def main():
     combined.to_csv(out_path, index=False)
 
     total    = len(combined)
-    n_attack = int(combined["label"].sum())
+    n_normal = int((combined["label"] == 0).sum())
     print(f"Simulation complete.")
     print(f"Total rows     : {total:,}")
-    print(f"Attack rows    : {n_attack:,} ({100 * n_attack / total:.1f}%)")
-    print(f"Normal rows    : {total - n_attack:,} ({100 * (total - n_attack) / total:.1f}%)")
+    print(f"Normal rows    : {n_normal:,} ({100 * n_normal / total:.1f}%)")
+    for name, lbl in VARIANTS.items():
+        n = int((combined["label"] == lbl).sum())
+        print(f"  label={lbl} ({name:20s}): {n:,} ({100 * n / total:.1f}%)")
     print(f"Devices        : {combined['device_id'].nunique()}")
     print(f"Saved to       : {out_path}")
 

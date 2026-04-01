@@ -37,16 +37,24 @@ def encode(ae, X, device, batch_size=256):
 
 
 def run_mamba(model, dataset, cfg, device):
+    """Returns (attack_scores, labels) where scores are float in [0,1].
+    Binary models: sigmoid output. Multi-class: 1 - P(normal class).
+    Labels are always returned raw (collapsed to binary by caller if needed).
+    """
     from torch.utils.data import DataLoader
     loader = DataLoader(dataset, batch_size=cfg.clf_batch_size, shuffle=False)
-    probs, labels = [], []
+    scores, labels = [], []
     model.eval()
     with torch.no_grad():
         for X_b, y_b in loader:
             logits = model(X_b.to(device))
-            probs.append(torch.sigmoid(logits).cpu().numpy())
+            if logits.dim() == 1:  # binary (num_classes=1)
+                scores.append(torch.sigmoid(logits).cpu().numpy())
+            else:  # multi-class: P(attack) = 1 - P(normal)
+                probs = torch.softmax(logits, dim=1)
+                scores.append((1.0 - probs[:, 0]).cpu().numpy())
             labels.append(y_b.numpy())
-    return np.concatenate(probs), np.concatenate(labels)
+    return np.concatenate(scores), np.concatenate(labels)
 
 
 def metrics(y_true, y_pred, y_prob):
@@ -132,18 +140,20 @@ def main():
 
     datasets = {
         "TON-IoT": {
-            "split_dir":  cfg.ton_splits_path,
-            "ae_path":    cfg.ton_autoencoder_model_path,
-            "clf_path":   cfg.ton_classifier_model_path,
-            "lstm_path":  cfg.ton_lstm_model_path,
-            "label_mode": "last",
+            "split_dir":   cfg.ton_splits_path,
+            "ae_path":     cfg.ton_autoencoder_model_path,
+            "clf_path":    cfg.ton_classifier_model_path,
+            "lstm_path":   cfg.ton_lstm_model_path,
+            "label_mode":  "last",
+            "num_classes": 1,
         },
         "Simulated ICU": {
-            "split_dir":  cfg.sim_splits_path,
-            "ae_path":    cfg.sim_autoencoder_model_path,
-            "clf_path":   cfg.sim_classifier_model_path,
-            "lstm_path":  cfg.sim_lstm_model_path,
-            "label_mode": "any",
+            "split_dir":   cfg.sim_splits_path,
+            "ae_path":     cfg.sim_autoencoder_model_path,
+            "clf_path":    cfg.sim_classifier_model_path,
+            "lstm_path":   cfg.sim_lstm_model_path,
+            "label_mode":  "max",
+            "num_classes": cfg.sim_num_classes,
         },
     }
 
@@ -152,8 +162,10 @@ def main():
     for ds_label, ds_cfg in datasets.items():
         print(f"\nProcessing {ds_label}...")
 
-        split_dir  = ds_cfg["split_dir"]
-        label_mode = ds_cfg["label_mode"]
+        split_dir   = ds_cfg["split_dir"]
+        label_mode  = ds_cfg["label_mode"]
+        is_sim      = ds_label == "Simulated ICU"
+        num_classes = ds_cfg["num_classes"]
 
         X_train         = np.load(os.path.join(split_dir, "X_train.npy"))
         X_test          = np.load(os.path.join(split_dir, "X_test.npy"))
@@ -175,41 +187,32 @@ def main():
         Z_train, err_train = encode(ae, X_train, device)
         Z_test,  err_test  = encode(ae, X_test,  device)
 
-        # 1. AE Only — threshold on reconstruction error
-        # threshold = mean + 2*std of benign training errors
-        benign_err = err_train[y_train == 0]
-        threshold  = benign_err.mean() + 2 * benign_err.std()
-
-        # For sequence-level evaluation, build sequences and aggregate recon error
         train_ds = ArraySequenceDataset(Z_train, y_train, group_ids_train, cfg.seq_len, label_mode)
         test_ds  = ArraySequenceDataset(Z_test,  y_test,  group_ids_test,  cfg.seq_len, label_mode)
 
-        # AE-only: use mean reconstruction error of last row across the sequence
-        # lastrow recon error as the anomaly score per sequence
-        ae_scores = err_test[
-            [int(test_ds.samples[i, -1, :].sum() * 0)   # placeholder index lookup
-             for i in range(len(test_ds))]
-        ] if False else None
+        # Ground-truth labels collapsed to binary (attack detected vs normal)
+        ae_labels_raw = test_ds.labels.numpy()
+        y_true = (ae_labels_raw > 0).astype(int) if is_sim else ae_labels_raw.astype(int)
 
-        # Simpler: directly use per-sequence mean of last-row recon error
-        # samples shape: (N, seq_len, F) — recon error is the last feature
+        # 1. AE Only — threshold on reconstruction error of last row
+        benign_err = err_train[y_train == 0]
+        threshold  = benign_err.mean() + 2 * benign_err.std()
         ae_scores  = test_ds.samples[:, -1, -1].numpy()   # last row, last feature = recon error
         ae_pred    = (ae_scores >= threshold).astype(int)
-        ae_labels  = test_ds.labels.numpy()
 
-        ae_metrics = metrics(ae_labels, ae_pred, ae_scores)
+        ae_metrics = metrics(y_true, ae_pred, ae_scores)
 
-        # 2. AE + LR
-        X_tr_last = train_ds.samples[:, -1, :].numpy()
-        y_tr_seq  = train_ds.labels.numpy()
-        X_te_last = test_ds.samples[:,  -1, :].numpy()
+        # 2. AE + LR — train binary detection LR on last-row latent features
+        X_tr_last   = train_ds.samples[:, -1, :].numpy()
+        y_tr_binary = (train_ds.labels.numpy() > 0).astype(int) if is_sim else train_ds.labels.numpy().astype(int)
+        X_te_last   = test_ds.samples[:,  -1, :].numpy()
 
         lr = LogisticRegression(max_iter=1000, random_state=cfg.random_seed)
-        lr.fit(X_tr_last, y_tr_seq)
+        lr.fit(X_tr_last, y_tr_binary)
         lr_prob = lr.predict_proba(X_te_last)[:, 1]
         lr_pred = (lr_prob >= cfg.threshold).astype(int)
 
-        lr_metrics = metrics(ae_labels, lr_pred, lr_prob)
+        lr_metrics = metrics(y_true, lr_pred, lr_prob)
 
         # 3. AE + Mamba
         mamba = MambaClassifier(
@@ -217,14 +220,15 @@ def main():
             d_model=cfg.d_model,
             n_layers=cfg.num_layers,
             dropout=cfg.dropout,
+            num_classes=num_classes,
         ).to(device)
         mamba.load_state_dict(torch.load(ds_cfg["clf_path"], map_location=device))
         mamba.eval()
 
-        mamba_prob, mamba_labels = run_mamba(mamba, test_ds, cfg, device)
-        mamba_pred = (mamba_prob >= cfg.threshold).astype(int)
+        mamba_score, _ = run_mamba(mamba, test_ds, cfg, device)
+        mamba_pred     = (mamba_score >= cfg.threshold).astype(int)
 
-        mamba_metrics = metrics(mamba_labels, mamba_pred, mamba_prob)
+        mamba_metrics = metrics(y_true, mamba_pred, mamba_score)
 
         # 4. AE + LSTM
         lstm = LSTMClassifier(
@@ -232,16 +236,16 @@ def main():
             hidden_dim=cfg.d_model,
             num_layers=cfg.num_layers,
             dropout=cfg.dropout,
+            num_classes=num_classes,
         ).to(device)
         lstm.load_state_dict(torch.load(ds_cfg["lstm_path"], map_location=device))
         lstm.eval()
 
-        lstm_prob, lstm_labels = run_mamba(lstm, test_ds, cfg, device)  # same inference fn
-        lstm_pred = (lstm_prob >= cfg.threshold).astype(int)
+        lstm_score, _ = run_mamba(lstm, test_ds, cfg, device)
+        lstm_pred     = (lstm_score >= cfg.threshold).astype(int)
 
-        lstm_metrics = metrics(lstm_labels, lstm_pred, lstm_prob)
+        lstm_metrics = metrics(y_true, lstm_pred, lstm_score)
 
-        # print table
         ds_results = {
             "AE Only":    ae_metrics,
             "AE + LR":    lr_metrics,

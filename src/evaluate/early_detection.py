@@ -63,7 +63,10 @@ def seq_model_preds(model, windows, device, threshold):
     X_tensor = torch.tensor(windows, dtype=torch.float32).to(device)
     with torch.no_grad():
         logits = model(X_tensor)
-        return (torch.sigmoid(logits) >= threshold).cpu().numpy().astype(int)
+        if logits.dim() == 1:  # binary (num_classes=1)
+            return (torch.sigmoid(logits) >= threshold).cpu().numpy().astype(int)
+        else:  # multi-class: attack if argmax != normal class (0)
+            return (torch.argmax(logits, dim=1) > 0).cpu().numpy().astype(int)
 
 
 def ascii_chart(title, x_vals, series, width=30):
@@ -109,6 +112,7 @@ def main():
         d_model=cfg.d_model,
         n_layers=cfg.num_layers,
         dropout=cfg.dropout,
+        num_classes=cfg.sim_num_classes,
     ).to(device)
     mamba.load_state_dict(torch.load(cfg.sim_classifier_model_path, map_location=device))
     mamba.eval()
@@ -118,6 +122,7 @@ def main():
         hidden_dim=cfg.d_model,
         num_layers=cfg.num_layers,
         dropout=cfg.dropout,
+        num_classes=cfg.sim_num_classes,
     ).to(device)
     lstm.load_state_dict(torch.load(cfg.sim_lstm_model_path, map_location=device))
     lstm.eval()

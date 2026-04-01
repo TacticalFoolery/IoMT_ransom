@@ -8,7 +8,11 @@ from src.utils import set_seed, get_device
 from src.datasets.sequence_dataset import ArraySequenceDataset
 from src.models.autoencoder import Autoencoder
 from src.models.mamba_classifier import MambaClassifier
-from src.evaluate.metrics import compute_metrics, print_metrics
+from src.evaluate.metrics import (
+    compute_metrics_multiclass,
+    print_metrics_multiclass,
+    SIM_CLASS_NAMES,
+)
 
 
 def extract_latent_and_error(model, X, device, batch_size=256):
@@ -55,7 +59,7 @@ def main():
         labels=y_test,
         group_ids=group_ids_test,
         seq_len=cfg.seq_len,
-        label_mode="any",
+        label_mode="max",
     )
     test_loader = DataLoader(test_dataset, batch_size=cfg.clf_batch_size, shuffle=False)
     print("Number of test sequences:", len(test_dataset))
@@ -66,27 +70,27 @@ def main():
         d_model=cfg.d_model,
         n_layers=cfg.num_layers,
         dropout=cfg.dropout,
+        num_classes=cfg.sim_num_classes,
     ).to(device)
     model.load_state_dict(torch.load(cfg.sim_classifier_model_path, map_location=device))
     model.eval()
 
-    all_probs  = []
+    all_preds  = []
     all_labels = []
 
     with torch.no_grad():
         for X_batch, y_batch in test_loader:
             X_batch = X_batch.to(device)
-            logits  = model(X_batch)
-            probs   = torch.sigmoid(logits).cpu().numpy()
-            all_probs.append(probs)
+            logits  = model(X_batch)                          # (B, num_classes)
+            preds   = torch.argmax(logits, dim=1).cpu().numpy()
+            all_preds.append(preds)
             all_labels.append(y_batch.numpy())
 
-    y_prob = np.concatenate(all_probs)
-    y_true = np.concatenate(all_labels)
-    y_pred = (y_prob >= cfg.threshold).astype(int)
+    y_pred = np.concatenate(all_preds)
+    y_true = np.concatenate(all_labels).astype(int)
 
-    metrics = compute_metrics(y_true, y_pred, y_prob)
-    print_metrics(metrics, dataset_label="Simulated ICU Test")
+    metrics = compute_metrics_multiclass(y_true, y_pred, num_classes=cfg.sim_num_classes)
+    print_metrics_multiclass(metrics, dataset_label="Simulated ICU Test", class_names=SIM_CLASS_NAMES)
 
 
 if __name__ == "__main__":

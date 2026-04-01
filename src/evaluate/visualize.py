@@ -4,7 +4,7 @@ Generates all figures and saves them to results/figures/.
 Figures produced
 
 1. roc_curves.png         — ROC curves: Mamba vs LR on both datasets
-2. confusion_matrices.png — Confusion matrix heatmaps (sim dataset)
+2. confusion_matrices.png — Confusion matrix heatmaps (sim dataset, multi-class)
 3. early_detection.png    — Cumulative detection rate vs steps after attack onset
 4. metrics_comparison.png — Bar chart: key metrics for Mamba vs LR on both datasets
 """
@@ -31,6 +31,7 @@ from src.models.mamba_classifier import MambaClassifier
 
 ATTACK_START = 200
 FIG_DIR = "results/figures"
+SIM_CLASS_NAMES = ["normal", "enc_heavy", "exfil_first", "wiper", "slow_burn"]
 STYLE = {
     "mamba":  {"color": "#2563EB", "label": "Mamba (sequence)"},
     "lr":     {"color": "#DC2626", "label": "LR (last row only)"},
@@ -56,16 +57,32 @@ def extract_latent_and_error(ae, X, device, batch_size=256):
 
 
 def run_mamba_inference(model, dataset, cfg, device):
+    """Returns (attack_scores, mc_predictions, raw_labels).
+
+    attack_scores : float in [0,1] — for ROC curves.
+      Binary model  : sigmoid output.
+      Multi-class   : 1 - P(normal class 0).
+    mc_predictions : int — argmax class for multi-class, threshold pred for binary.
+    raw_labels     : labels from dataset (0-4 for sim, 0-1 for TON).
+    """
     from torch.utils.data import DataLoader
     loader = DataLoader(dataset, batch_size=cfg.clf_batch_size, shuffle=False)
-    probs, labels = [], []
+    scores, mc_preds, labels = [], [], []
     model.eval()
     with torch.no_grad():
         for X_b, y_b in loader:
             logits = model(X_b.to(device))
-            probs.append(torch.sigmoid(logits).cpu().numpy())
+            if logits.dim() == 1:  # binary
+                s = torch.sigmoid(logits).cpu().numpy()
+                p = (s >= cfg.threshold).astype(int)
+            else:  # multi-class
+                probs = torch.softmax(logits, dim=1)
+                s = (1.0 - probs[:, 0]).cpu().numpy()   # P(attack) for ROC
+                p = torch.argmax(logits, dim=1).cpu().numpy().astype(int)
+            scores.append(s)
+            mc_preds.append(p)
             labels.append(y_b.numpy())
-    return np.concatenate(probs), np.concatenate(labels)
+    return np.concatenate(scores), np.concatenate(mc_preds), np.concatenate(labels)
 
 
 def build_dataset(Z, y, group_ids, cfg, label_mode):
@@ -82,9 +99,9 @@ def load_split(split_dir):
 
 
 def lr_on_sequences(train_ds, test_ds, cfg):
-    """Train LR on last-row features of train sequences, evaluate on test."""
+    """Train a binary detection LR on last-row features; return attack probability."""
     X_tr = train_ds.samples[:, -1, :].numpy()
-    y_tr = train_ds.labels.numpy()
+    y_tr = (train_ds.labels.numpy() > 0).astype(int)   # collapse to binary
     X_te = test_ds.samples[:,  -1, :].numpy()
     lr = LogisticRegression(max_iter=1000, random_state=cfg.random_seed)
     lr.fit(X_tr, y_tr)
@@ -133,31 +150,40 @@ def plot_roc_curves(results, out_path):
 
 
 
-# Figure 2 — Confusion matrices
+# Figure 2 — Confusion matrices (multi-class for sim)
 
 
-def plot_confusion_matrices(cm_data, out_path):
-    fig, axes = plt.subplots(1, 2, figsize=(10, 4))
-    fig.suptitle("Confusion Matrices — Simulated ICU Dataset", fontsize=14, fontweight="bold")
+def plot_confusion_matrices(cm_data, out_path, class_names=None):
+    n_classes   = len(class_names) if class_names else 2
+    tick_labels = class_names if class_names else ["Normal", "Attack"]
+    fig_w       = 14 if n_classes > 2 else 10
+    fig_h       = 6  if n_classes > 2 else 4
+
+    fig, axes = plt.subplots(1, 2, figsize=(fig_w, fig_h))
+    title_suffix = "(multi-class)" if n_classes > 2 else ""
+    fig.suptitle(f"Confusion Matrices — Simulated ICU Dataset {title_suffix}",
+                 fontsize=14, fontweight="bold")
 
     cmap = LinearSegmentedColormap.from_list("blue_white", ["#ffffff", "#2563EB"])
 
     for ax, (title, (y_true, y_pred)) in zip(axes, cm_data.items()):
-        cm = confusion_matrix(y_true, y_pred)
+        cm = confusion_matrix(y_true, y_pred, labels=list(range(n_classes)))
         im = ax.imshow(cm, interpolation="nearest", cmap=cmap)
         plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
 
-        thresh = cm.max() / 2
-        for i in range(2):
-            for j in range(2):
+        thresh   = cm.max() / 2
+        fontsize = 8 if n_classes > 2 else 14
+        for i in range(n_classes):
+            for j in range(n_classes):
                 ax.text(j, i, f"{cm[i, j]:,}",
-                        ha="center", va="center", fontsize=14, fontweight="bold",
+                        ha="center", va="center", fontsize=fontsize, fontweight="bold",
                         color="white" if cm[i, j] > thresh else "black")
 
-        ax.set_xticks([0, 1])
-        ax.set_yticks([0, 1])
-        ax.set_xticklabels(["Normal", "Attack"], fontsize=10)
-        ax.set_yticklabels(["Normal", "Attack"], fontsize=10)
+        ticks = list(range(n_classes))
+        ax.set_xticks(ticks)
+        ax.set_yticks(ticks)
+        ax.set_xticklabels(tick_labels, fontsize=8, rotation=30, ha="right")
+        ax.set_yticklabels(tick_labels, fontsize=8)
         ax.set_xlabel("Predicted Label", fontsize=11)
         ax.set_ylabel("True Label", fontsize=11)
         ax.set_title(title, fontsize=12)
@@ -272,18 +298,19 @@ def main():
 
     print("Loading models and data...")
 
-    roc_results     = {}
-    cm_data         = {}
-    metrics_data    = {}
+    roc_results  = {}
+    cm_data      = {}
+    metrics_data = {}
 
     for ds_name in ("ton", "sim"):
-        label_mode  = "any" if ds_name == "sim" else "last"
-        split_dir   = cfg.sim_splits_path if ds_name == "sim" else cfg.ton_splits_path
-        ae_path     = cfg.sim_autoencoder_model_path if ds_name == "sim" else cfg.ton_autoencoder_model_path
-        clf_path    = cfg.sim_classifier_model_path  if ds_name == "sim" else cfg.ton_classifier_model_path
+        is_sim      = ds_name == "sim"
+        label_mode  = "max" if is_sim else "last"
+        num_classes = cfg.sim_num_classes if is_sim else 1
+        split_dir   = cfg.sim_splits_path if is_sim else cfg.ton_splits_path
+        ae_path     = cfg.sim_autoencoder_model_path if is_sim else cfg.ton_autoencoder_model_path
+        clf_path    = cfg.sim_classifier_model_path  if is_sim else cfg.ton_classifier_model_path
         splits      = load_split(split_dir)
 
-        # load dataset-specific AE
         ae = Autoencoder(
             input_dim=splits["X_train"].shape[1],
             hidden_dim1=cfg.ae_hidden_dim1,
@@ -293,12 +320,12 @@ def main():
         ae.load_state_dict(torch.load(ae_path, map_location=device))
         ae.eval()
 
-        # load dataset-specific Mamba classifier
         mamba = MambaClassifier(
             input_dim=cfg.latent_dim + 1,
             d_model=cfg.d_model,
             n_layers=cfg.num_layers,
             dropout=cfg.dropout,
+            num_classes=num_classes,
         ).to(device)
         mamba.load_state_dict(torch.load(clf_path, map_location=device))
         mamba.eval()
@@ -310,20 +337,23 @@ def main():
         train_ds = build_dataset(Z_train, splits["y_train"], splits["group_ids_train"], cfg, label_mode)
         test_ds  = build_dataset(Z_test,  splits["y_test"],  splits["group_ids_test"],  cfg, label_mode)
 
-        mamba_prob, y_true = run_mamba_inference(mamba, test_ds, cfg, device)
-        lr_prob            = lr_on_sequences(train_ds, test_ds, cfg)
+        mamba_score, mamba_mc_pred, y_true_raw = run_mamba_inference(mamba, test_ds, cfg, device)
+        lr_score = lr_on_sequences(train_ds, test_ds, cfg)
 
-        mamba_pred = (mamba_prob >= cfg.threshold).astype(int)
-        lr_pred    = (lr_prob    >= cfg.threshold).astype(int)
+        # Binarize labels for ROC curves and binary metrics
+        y_true_binary  = (y_true_raw > 0).astype(int) if is_sim else y_true_raw.astype(int)
+        mamba_pred_bin = (mamba_score >= cfg.threshold).astype(int)
+        lr_pred_bin    = (lr_score    >= cfg.threshold).astype(int)
 
         roc_results[ds_name] = {
-            "mamba": (y_true, mamba_prob),
-            "lr":    (y_true, lr_prob),
+            "mamba": (y_true_binary, mamba_score),
+            "lr":    (y_true_binary, lr_score),
         }
 
-        if ds_name == "sim":
-            cm_data["Mamba (sequence)"]      = (y_true, mamba_pred)
-            cm_data["LR (last row only)"] = (y_true, lr_pred)
+        if is_sim:
+            # Multi-class confusion matrix for Mamba; binary for LR (detection only)
+            cm_data["Mamba (sequence)"]   = (y_true_raw.astype(int), mamba_mc_pred)
+            cm_data["LR (last row only)"] = (y_true_binary, lr_pred_bin)
 
         def make_metrics(y_t, y_p, y_pb):
             return {
@@ -335,13 +365,13 @@ def main():
             }
 
         metrics_data[ds_name] = {
-            "mamba": make_metrics(y_true, mamba_pred, mamba_prob),
-            "lr":    make_metrics(y_true, lr_pred,    lr_prob),
+            "mamba": make_metrics(y_true_binary, mamba_pred_bin, mamba_score),
+            "lr":    make_metrics(y_true_binary, lr_pred_bin,    lr_score),
         }
 
     # early detection data (re-compute using sim models)
     print("\nComputing early detection lags...")
-    splits   = load_split(cfg.sim_splits_path)
+    splits = load_split(cfg.sim_splits_path)
     ae = Autoencoder(
         input_dim=splits["X_train"].shape[1],
         hidden_dim1=cfg.ae_hidden_dim1,
@@ -356,6 +386,7 @@ def main():
         d_model=cfg.d_model,
         n_layers=cfg.num_layers,
         dropout=cfg.dropout,
+        num_classes=cfg.sim_num_classes,
     ).to(device)
     mamba.load_state_dict(torch.load(cfg.sim_classifier_model_path, map_location=device))
     mamba.eval()
@@ -363,7 +394,7 @@ def main():
     Z_train = extract_latent_and_error(ae, splits["X_train"], device)
     Z_test  = extract_latent_and_error(ae, splits["X_test"],  device)
 
-    # train LR for early detection
+    # train binary detection LR for early detection comparison
     unique_tr, inv_tr = np.unique(splits["group_ids_train"], return_inverse=True)
     last_rows_tr, labels_tr = [], []
     for gi in range(len(unique_tr)):
@@ -372,7 +403,8 @@ def main():
             continue
         wins = sliding_windows(Z_train[rows], cfg.seq_len)
         y_r  = splits["y_train"][rows]
-        labs = np.array([int(np.any(y_r[j:j + cfg.seq_len])) for j in range(len(rows) - cfg.seq_len + 1)])
+        labs = np.array([int(np.any(y_r[j:j + cfg.seq_len] > 0))
+                         for j in range(len(rows) - cfg.seq_len + 1)])
         last_rows_tr.append(wins[:, -1, :])
         labels_tr.append(labs)
     lr_ed = LogisticRegression(max_iter=1000, random_state=cfg.random_seed)
@@ -391,11 +423,14 @@ def main():
         if len(Z_dev) < cfg.seq_len:
             continue
         wins = sliding_windows(Z_dev, cfg.seq_len)
-        # mamba
+
         with torch.no_grad():
             logits = mamba(torch.tensor(wins, dtype=torch.float32).to(device))
-            m_preds = (torch.sigmoid(logits) >= cfg.threshold).cpu().numpy().astype(int)
-        # lr
+            if logits.dim() == 1:
+                m_preds = (torch.sigmoid(logits) >= cfg.threshold).cpu().numpy().astype(int)
+            else:
+                m_preds = (torch.argmax(logits, dim=1) > 0).cpu().numpy().astype(int)
+
         l_preds = lr_ed.predict(wins[:, -1, :])
 
         def first_valid(preds):
@@ -415,10 +450,11 @@ def main():
 
     # generate figures
     print("\nGenerating figures...")
-    plot_roc_curves(roc_results,                              os.path.join(FIG_DIR, "roc_curves.png"))
-    plot_confusion_matrices(cm_data,                          os.path.join(FIG_DIR, "confusion_matrices.png"))
-    plot_early_detection(mamba_lags, lr_lags, n_attacked,    os.path.join(FIG_DIR, "early_detection.png"))
-    plot_metrics_comparison(metrics_data,                     os.path.join(FIG_DIR, "metrics_comparison.png"))
+    plot_roc_curves(roc_results,                           os.path.join(FIG_DIR, "roc_curves.png"))
+    plot_confusion_matrices(cm_data,                       os.path.join(FIG_DIR, "confusion_matrices.png"),
+                            class_names=SIM_CLASS_NAMES)
+    plot_early_detection(mamba_lags, lr_lags, n_attacked,  os.path.join(FIG_DIR, "early_detection.png"))
+    plot_metrics_comparison(metrics_data,                  os.path.join(FIG_DIR, "metrics_comparison.png"))
 
     print(f"\nAll figures saved to {FIG_DIR}/")
 

@@ -9,9 +9,11 @@ class LSTMClassifier(nn.Module):
         hidden_dim: int = 64,
         num_layers: int = 2,
         dropout: float = 0.2,
+        num_classes: int = 1,
     ):
         super().__init__()
 
+        self.num_classes = num_classes
         self.lstm = nn.LSTM(
             input_size=input_dim,
             hidden_size=hidden_dim,
@@ -26,7 +28,7 @@ class LSTMClassifier(nn.Module):
             nn.Linear(hidden_dim, 64),
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(64, 1),
+            nn.Linear(64, num_classes),
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -34,4 +36,8 @@ class LSTMClassifier(nn.Module):
         out, _ = self.lstm(x)       # (batch, seq_len, hidden_dim)
         out = out[:, -1, :]         # last timestep hidden state
         out = self.dropout(out)
-        return self.classifier(out).squeeze(1)
+        out = self.classifier(out)
+        # Binary mode: squeeze to (B,) for BCEWithLogitsLoss compatibility
+        if self.num_classes == 1:
+            return out.squeeze(1)
+        return out

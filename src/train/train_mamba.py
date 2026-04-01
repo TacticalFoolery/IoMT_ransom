@@ -87,12 +87,11 @@ def main(dataset_name="ton"):
     print("Encoded training shape:", Z_train.shape)
     print("Encoded testing shape :", Z_test.shape)
 
-    # Build grouped sliding-window sequences.
-    # label_mode="any": a window is labeled attack if any timestep in it is
-    # under attack. With device-level group splits (no row shuffling) this
-    # creates genuine early-detection windows where the last row is still
-    # near-normal but the sequence already contains the onset of the attack.
-    label_mode = "any" if dataset_name.lower() == "sim" else "last"
+    # sim uses "max" label_mode so the sequence label carries the variant class
+    # (0=normal, 1-4=variant). TON uses "last" for binary classification.
+    is_sim = dataset_name.lower() == "sim"
+    label_mode = "max" if is_sim else "last"
+    num_classes = cfg.sim_num_classes if is_sim else 1
 
     train_dataset = ArraySequenceDataset(
         features=Z_train,
@@ -121,10 +120,11 @@ def main(dataset_name="ton"):
         input_dim=cfg.latent_dim + 1,   # latent features + reconstruction error
         d_model=cfg.d_model,
         n_layers=cfg.num_layers,
-        dropout=cfg.dropout
+        dropout=cfg.dropout,
+        num_classes=num_classes,
     ).to(device)
 
-    criterion = nn.BCEWithLogitsLoss()
+    criterion = nn.CrossEntropyLoss() if is_sim else nn.BCEWithLogitsLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=cfg.clf_learning_rate)
 
     # Training loop
@@ -137,6 +137,8 @@ def main(dataset_name="ton"):
         for X_batch, y_batch in train_loader:
             X_batch = X_batch.to(device)
             y_batch = y_batch.to(device)
+            if is_sim:
+                y_batch = y_batch.long()
 
             optimizer.zero_grad()
 

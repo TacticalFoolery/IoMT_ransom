@@ -39,7 +39,7 @@ class GroupedSequenceDataset(Dataset):
         label_mode: str = "any",
         min_group_size: int = None,
     ):
-        assert label_mode in ("any", "last")
+        assert label_mode in ("any", "last", "max")
         self.seq_len = seq_len
         self.feature_columns = feature_columns
         self.label_column = label_column
@@ -67,6 +67,8 @@ class GroupedSequenceDataset(Dataset):
 
                 if label_mode == "last":
                     seq_label = int(y_window[-1])
+                elif label_mode == "max":
+                    seq_label = int(np.max(y_window))
                 else:  # "any"
                     seq_label = int(np.any(y_window == 1))
 
@@ -76,8 +78,9 @@ class GroupedSequenceDataset(Dataset):
         if len(self.samples) == 0:
             raise ValueError("No sequences created. Check seq_len, grouping, and time ordering.")
 
+        label_dtype = torch.long if label_mode == "max" else torch.float32
         self.samples = torch.tensor(np.array(self.samples), dtype=torch.float32)
-        self.labels = torch.tensor(np.array(self.labels), dtype=torch.float32)
+        self.labels = torch.tensor(np.array(self.labels), dtype=label_dtype)
 
     def __len__(self):
         return len(self.samples)
@@ -111,7 +114,7 @@ class ArraySequenceDataset(Dataset):
         label_mode: str = "any",
     ):
         assert features.shape[0] == labels.shape[0] == len(group_ids)
-        assert label_mode in ("any", "last")
+        assert label_mode in ("any", "last", "max")
 
         self.seq_len = seq_len
         self.samples = []
@@ -136,7 +139,9 @@ class ArraySequenceDataset(Dataset):
 
                 if label_mode == "last":
                     seq_label = int(y_window[-1])
-                else:
+                elif label_mode == "max":
+                    seq_label = int(np.max(y_window))
+                else:  # "any"
                     seq_label = int(np.any(y_window == 1))
 
                 self.samples.append(x_window)
@@ -145,8 +150,9 @@ class ArraySequenceDataset(Dataset):
         if len(self.samples) == 0:
             raise ValueError("No sequences created from arrays. Check seq_len and group_ids.")
 
+        label_dtype = torch.long if label_mode == "max" else torch.float32
         self.samples = torch.tensor(np.array(self.samples), dtype=torch.float32)
-        self.labels = torch.tensor(np.array(self.labels), dtype=torch.float32)
+        self.labels = torch.tensor(np.array(self.labels), dtype=label_dtype)
 
     def __len__(self):
         return len(self.samples)

@@ -36,7 +36,7 @@ def main():
     group_ids = df["device_id"].values
     y = df["label"].values
 
-    drop_cols = ["label", "timestamp", "device_id", "device_type"]
+    drop_cols = ["label", "timestamp", "device_id", "device_type", "attack_variant"]
     X_df = df.drop(columns=[c for c in drop_cols if c in df.columns])
 
     X_df = X_df.replace([float("inf"), float("-inf")], float("nan")).fillna(0)
