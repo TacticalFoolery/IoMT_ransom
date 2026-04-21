@@ -20,6 +20,8 @@ class Config:
     ton_splits_path: str = "data/splits/ton_splits/"
     sim_splits_path: str = "data/splits/sim_splits/"
     cic_splits_path: str = "data/splits/cic_splits/"
+    CIC_SPLIT_PATH = "data/splits/"
+    CIC_DATASET = "cic"
 
     # Dataset columns
     target_column: str = "label"
@@ -74,7 +76,7 @@ class Config:
     loss_dir: str = "results/losses"
 
     # Simulated dataset classes
-    sim_num_classes: int = 5
+    sim_num_classes: int = 1
 
     # Evaluation
     threshold: float = 0.5
