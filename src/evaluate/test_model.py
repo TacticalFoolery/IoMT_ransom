@@ -17,6 +17,10 @@ from src.models.mamba_classifier import MambaClassifier
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+# 🔥 DEFINE ALL YOUR CLASSES HERE (EDIT THIS)
+# Example: 0=Benign, 1=DDoS, 2=DoS, 3=Ransomware, 4=Other
+ALL_CLASSES = np.array([0, 1, 2, 3, 4])
+
 
 def load_data():
     print("Loading preprocessed data...")
@@ -30,7 +34,7 @@ def load_data():
     return X_test, y_test
 
 
-def evaluate(model, loader, num_classes):
+def evaluate(model, loader):
     model.eval()
 
     all_probs = []
@@ -55,7 +59,7 @@ def evaluate(model, loader, num_classes):
     preds = np.concatenate(all_preds)
     labels = np.concatenate(all_labels)
 
-    # Metrics
+    # ===== BASIC METRICS =====
     acc = (preds == labels).mean()
 
     precision_macro = precision_score(labels, preds, average="macro", zero_division=0)
@@ -68,15 +72,26 @@ def evaluate(model, loader, num_classes):
     print(f"Recall    (macro): {recall_macro:.4f}")
     print(f"F1-score  (macro): {f1_macro:.4f}")
 
+    # ===== DEBUG CLASS COVERAGE =====
+    print("\nClasses in test set:", np.unique(labels))
+    print("All expected classes:", ALL_CLASSES)
+
+    # ===== CONFUSION MATRIX =====
     print("\nConfusion Matrix:")
-    print(confusion_matrix(labels, preds))
+    print(confusion_matrix(labels, preds, labels=ALL_CLASSES))
 
+    # ===== CLASSIFICATION REPORT =====
     print("\nClassification Report:")
-    print(classification_report(labels, preds, zero_division=0))
+    print(classification_report(
+        labels,
+        preds,
+        labels=ALL_CLASSES,
+        zero_division=0
+    ))
 
-    # AUC
+    # ===== AUC-ROC =====
     try:
-        labels_bin = label_binarize(labels, classes=np.arange(num_classes))
+        labels_bin = label_binarize(labels, classes=ALL_CLASSES)
         auc = roc_auc_score(labels_bin, probs, multi_class="ovr")
         print("\nAUC-ROC:", auc)
     except Exception as e:
@@ -96,27 +111,35 @@ def main():
     )
 
     input_dim = X_test.shape[-1]
-    num_classes = len(np.unique(y_test.numpy()))
+    num_classes = len(ALL_CLASSES)
 
-    # LSTM
+    # ===== LSTM =====
     print("\nLoading LSTM...")
-    lstm = LSTMClassifier(input_dim=input_dim, num_classes=num_classes).to(DEVICE)
+    lstm = LSTMClassifier(
+        input_dim=input_dim,
+        num_classes=num_classes
+    ).to(DEVICE)
+
     lstm.load_state_dict(
         torch.load("models/lstm_classifier_sim.pt", map_location=DEVICE)
     )
 
     print("Evaluating LSTM...")
-    evaluate(lstm, test_loader, num_classes)
+    evaluate(lstm, test_loader)
 
-    # Mamba
+    # ===== MAMBA =====
     print("\nLoading Mamba...")
-    mamba = MambaClassifier(input_dim=input_dim, num_classes=num_classes).to(DEVICE)
+    mamba = MambaClassifier(
+        input_dim=input_dim,
+        num_classes=num_classes
+    ).to(DEVICE)
+
     mamba.load_state_dict(
         torch.load("models/mamba_classifier_sim.pt", map_location=DEVICE)
     )
 
     print("Evaluating Mamba...")
-    evaluate(mamba, test_loader, num_classes)
+    evaluate(mamba, test_loader)
 
 
 if __name__ == "__main__":
