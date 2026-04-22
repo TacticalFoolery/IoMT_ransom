@@ -8,36 +8,30 @@ SEQ_LEN = 10
 MAX_TRAIN_SAMPLES = 100000
 MAX_TEST_SAMPLES = 20000
 
-# -------- CLASS MAPPING --------
+
 def get_label_from_filename(file):
-    if "Benign" in file:
+    file = file.lower()
+
+    if "benign" in file:
         return 0
-    elif "DDoS" in file:
+    elif "mqtt" in file:
         return 1
-    elif "DoS" in file:
+    elif "tcp_ip" in file:
         return 2
-    elif "Recon" in file:
+    elif "recon" in file:
         return 3
-    elif "MQTT" in file:
-        return 4
     else:
         return 4
 
 
-def load_files(pattern):
-    files = glob(pattern, recursive=True)
-
-    if len(files) == 0:
-        raise ValueError(f"No CSV files found for pattern: {pattern}")
-
+def load_files(paths):
     all_dfs = []
 
-    for file in files:
+    for file in paths:
         print(f"Loading {file}")
         df = pd.read_csv(file)
 
-        label = get_label_from_filename(file)
-        df["label"] = label
+        df["label"] = get_label_from_filename(file)
 
         all_dfs.append(df)
 
@@ -58,52 +52,41 @@ def create_sequences(X, y, seq_len):
 def main():
     print("Loading data...")
 
-    train_path = "data/raw/sim_raw/CICIoMT2024/**/*.csv"
-    test_path  = "data/raw/sim_raw/CICIoMT2024/**/*.csv"
+    train_files = glob("data/raw/sim_raw/CICIoMT2024/**/train/*.csv", recursive=True)
+    test_files  = glob("data/raw/sim_raw/CICIoMT2024/**/test/*.csv", recursive=True)
 
-    train_df = load_files(train_path)
-    test_df  = train_df.copy() 
+    train_df = load_files(train_files)
+    test_df  = load_files(test_files)
 
     print("Sampling...")
 
     train_df = train_df.sample(n=min(len(train_df), MAX_TRAIN_SAMPLES), random_state=42)
+    test_df  = test_df.sample(n=min(len(test_df), MAX_TEST_SAMPLES), random_state=42)
 
-    print("Splitting...")
+    X_train = train_df.drop(columns=["label"])
+    y_train = train_df["label"].values
 
-    X = train_df.drop(columns=["label"])
-    y = train_df["label"].values
+    X_test = test_df.drop(columns=["label"])
+    y_test = test_df["label"].values
 
-    print("Cleaning...")
-
-    X = X.replace([np.inf, -np.inf], np.nan).fillna(0)
-
-    print("Scaling...")
+    X_train = X_train.replace([np.inf, -np.inf], np.nan).fillna(0)
+    X_test  = X_test.replace([np.inf, -np.inf], np.nan).fillna(0)
 
     scaler = StandardScaler()
-    X = scaler.fit_transform(X).astype(np.float32)
+    X_train = scaler.fit_transform(X_train).astype(np.float32)
+    X_test  = scaler.transform(X_test).astype(np.float32)
 
-    print("Creating sequences...")
-
-    X_seq, y_seq = create_sequences(X, y, SEQ_LEN)
-
-    split = int(0.8 * len(X_seq))
-
-    X_train, X_test = X_seq[:split], X_seq[split:]
-    y_train, y_test = y_seq[:split], y_seq[split:]
-
-    print("Train:", X_train.shape)
-    print("Test :", X_test.shape)
-
-    print("Saving...")
+    X_train_seq, y_train_seq = create_sequences(X_train, y_train, SEQ_LEN)
+    X_test_seq, y_test_seq   = create_sequences(X_test, y_test, SEQ_LEN)
 
     os.makedirs("data/splits/sim_splits", exist_ok=True)
 
-    np.save("data/splits/sim_splits/X_train.npy", X_train)
-    np.save("data/splits/sim_splits/y_train.npy", y_train)
-    np.save("data/splits/sim_splits/X_test.npy", X_test)
-    np.save("data/splits/sim_splits/y_test.npy", y_test)
+    np.save("data/splits/sim_splits/X_train.npy", X_train_seq)
+    np.save("data/splits/sim_splits/y_train.npy", y_train_seq)
+    np.save("data/splits/sim_splits/X_test.npy", X_test_seq)
+    np.save("data/splits/sim_splits/y_test.npy", y_test_seq)
 
-    print("Done. Now your models actually have something to learn.")
+    print("Done.")
 
 
 if __name__ == "__main__":

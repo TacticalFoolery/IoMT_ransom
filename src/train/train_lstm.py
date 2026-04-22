@@ -1,99 +1,53 @@
 import os
-import torch
 import numpy as np
+import torch
 import torch.nn as nn
-import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
 
 from src.models.lstm_classifier import LSTMClassifier
 
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
 
 def main(dataset="sim"):
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Using device: {device}")
-    print(f"Training LSTM on dataset: {dataset}")
-
-    # LOAD DATA
-    split_dir = f"data/splits/{dataset}_splits/"
+    split_dir = "data/splits/sim_splits/"
 
     X_train = np.load(os.path.join(split_dir, "X_train.npy"))
     y_train = np.load(os.path.join(split_dir, "y_train.npy"))
 
-    X_test = np.load(os.path.join(split_dir, "X_test.npy"))
-    y_test = np.load(os.path.join(split_dir, "y_test.npy"))
-
-    print("Train shape:", X_train.shape)
-    print("Test shape :", X_test.shape)
-
-    # CONVERT TO TENSORS
-
     X_train = torch.tensor(X_train, dtype=torch.float32)
     y_train = torch.tensor(y_train, dtype=torch.long)
 
-    X_test = torch.tensor(X_test, dtype=torch.float32)
-    y_test = torch.tensor(y_test, dtype=torch.long)
+    loader = DataLoader(TensorDataset(X_train, y_train), batch_size=64, shuffle=True)
 
-    train_loader = DataLoader(
-        TensorDataset(X_train, y_train),
-        batch_size=256,
-        shuffle=True
-    )
-
-    # MODEL
     input_dim = X_train.shape[-1]
-    num_classes = len(np.unique(y_train.numpy()))
+    num_classes = 5
 
-    model = LSTMClassifier(
-        input_dim=input_dim,
-        num_classes=num_classes
-    ).to(device)
+    model = LSTMClassifier(input_dim=input_dim, num_classes=num_classes).to(DEVICE)
 
-    # CLASS WEIGHTS
-    print("Computing class weights...")
+    criterion = nn.CrossEntropyLoss()
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
 
-    class_counts = np.bincount(y_train.numpy())
-    class_weights = 1.0 / (class_counts + 1e-6) 
-    class_weights = class_weights / class_weights.sum()
-
-    print("Class counts:", class_counts)
-    print("Class weights:", class_weights)
-
-    weights = torch.tensor(class_weights, dtype=torch.float32).to(device)
-
-    criterion = nn.CrossEntropyLoss(weight=weights)
-    optimizer = optim.Adam(model.parameters(), lr=0.001)
-
-    # TRAINING LOOP
-    epochs = 5
-
-    for epoch in range(epochs):
-        model.train()
+    for epoch in range(5):
         total_loss = 0
+        model.train()
 
-        for X_batch, y_batch in train_loader:
-            X_batch = X_batch.to(device)
-            y_batch = y_batch.to(device)
+        for X_batch, y_batch in loader:
+            X_batch, y_batch = X_batch.to(DEVICE), y_batch.to(DEVICE)
 
             optimizer.zero_grad()
-
             outputs = model(X_batch)
-            loss = criterion(outputs, y_batch)
 
+            loss = criterion(outputs, y_batch)
             loss.backward()
             optimizer.step()
 
             total_loss += loss.item()
 
-        print(f"Epoch {epoch+1}/{epochs} - Loss: {total_loss:.4f}")
+        print(f"Epoch {epoch+1} Loss: {total_loss:.4f}")
 
-    #Save model
-    os.makedirs("models", exist_ok=True)
-    torch.save(model.state_dict(), f"models/lstm_classifier_{dataset}.pt")
-
-    print("LSTM training complete.")
+    torch.save(model.state_dict(), "models/lstm_classifier_sim.pt")
 
 
 if __name__ == "__main__":
-    import sys
-    dataset = sys.argv[1] if len(sys.argv) > 1 else "sim"
-    main(dataset)
+    main()
