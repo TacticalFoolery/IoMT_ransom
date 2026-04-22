@@ -15,18 +15,25 @@ from src.models.lstm_classifier import LSTMClassifier
 from src.models.mamba_classifier import MambaClassifier
 
 
+# =========================
+# DEVICE CONFIG
+# =========================
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# 🔥 DEFINE ALL YOUR CLASSES HERE (EDIT THIS)
-# Example: 0=Benign, 1=DDoS, 2=DoS, 3=Ransomware, 4=Other
+# =========================
+# CLASS DEFINITIONS
+# =========================
 ALL_CLASSES = np.array([0, 1, 2, 3, 4])
 
 
+# =========================
+# LOAD CIC DATA
+# =========================
 def load_data():
-    print("Loading preprocessed data...")
+    print("Loading preprocessed CIC data...")
 
-    X_test = np.load("data/splits/sim_splits/X_test.npy")
-    y_test = np.load("data/splits/sim_splits/y_test.npy")
+    X_test = np.load("data/splits/cic_splits/X_test.npy")
+    y_test = np.load("data/splits/cic_splits/y_test.npy")
 
     print("X_test shape:", X_test.shape)
     print("y_test shape:", y_test.shape)
@@ -34,6 +41,9 @@ def load_data():
     return X_test, y_test
 
 
+# =========================
+# EVALUATION FUNCTION
+# =========================
 def evaluate(model, loader):
     model.eval()
 
@@ -46,7 +56,15 @@ def evaluate(model, loader):
             X_batch = X_batch.to(DEVICE)
             y_batch = y_batch.to(DEVICE)
 
+            # Ensure sequence format
+            if X_batch.dim() == 2:
+                X_batch = X_batch.unsqueeze(1)
+
             outputs = model(X_batch)
+
+            # Handle sequence outputs
+            if outputs.dim() == 3:
+                outputs = outputs[:, -1, :]
 
             probs = torch.softmax(outputs, dim=1)
             preds = torch.argmax(probs, dim=1)
@@ -59,7 +77,9 @@ def evaluate(model, loader):
     preds = np.concatenate(all_preds)
     labels = np.concatenate(all_labels)
 
-    # ===== BASIC METRICS =====
+    # =========================
+    # BASIC METRICS
+    # =========================
     acc = (preds == labels).mean()
 
     precision_macro = precision_score(labels, preds, average="macro", zero_division=0)
@@ -72,15 +92,15 @@ def evaluate(model, loader):
     print(f"Recall    (macro): {recall_macro:.4f}")
     print(f"F1-score  (macro): {f1_macro:.4f}")
 
-    # ===== DEBUG CLASS COVERAGE =====
+    # CLASS COVERAGE CHECK
     print("\nClasses in test set:", np.unique(labels))
     print("All expected classes:", ALL_CLASSES)
 
-    # ===== CONFUSION MATRIX =====
+    # CONFUSION MATRIX
     print("\nConfusion Matrix:")
     print(confusion_matrix(labels, preds, labels=ALL_CLASSES))
 
-    # ===== CLASSIFICATION REPORT =====
+    # CLASSIFICATION REPORT
     print("\nClassification Report:")
     print(classification_report(
         labels,
@@ -89,7 +109,7 @@ def evaluate(model, loader):
         zero_division=0
     ))
 
-    # ===== AUC-ROC =====
+    # AUC-ROC
     try:
         labels_bin = label_binarize(labels, classes=ALL_CLASSES)
         auc = roc_auc_score(labels_bin, probs, multi_class="ovr")
@@ -98,7 +118,10 @@ def evaluate(model, loader):
         print("\nAUC-ROC failed:", e)
 
 
+
+# MAIN FUNCTION
 def main():
+    # Load data
     X_test, y_test = load_data()
 
     X_test = torch.tensor(X_test, dtype=torch.float32)
@@ -113,7 +136,7 @@ def main():
     input_dim = X_test.shape[-1]
     num_classes = len(ALL_CLASSES)
 
-    # ===== LSTM =====
+    # LSTM
     print("\nLoading LSTM...")
     lstm = LSTMClassifier(
         input_dim=input_dim,
@@ -121,13 +144,14 @@ def main():
     ).to(DEVICE)
 
     lstm.load_state_dict(
-        torch.load("models/lstm_classifier_sim.pt", map_location=DEVICE)
+        torch.load("models/lstm_classifier_cic.pt", map_location=DEVICE)
     )
 
     print("Evaluating LSTM...")
     evaluate(lstm, test_loader)
 
-    # ===== MAMBA =====
+    # MAMBA
+   
     print("\nLoading Mamba...")
     mamba = MambaClassifier(
         input_dim=input_dim,
@@ -135,12 +159,12 @@ def main():
     ).to(DEVICE)
 
     mamba.load_state_dict(
-        torch.load("models/mamba_classifier_sim.pt", map_location=DEVICE)
+        torch.load("models/mamba_classifier_cic.pt", map_location=DEVICE)
     )
 
     print("Evaluating Mamba...")
     evaluate(mamba, test_loader)
 
-
+# ENTRY POINT
 if __name__ == "__main__":
     main()

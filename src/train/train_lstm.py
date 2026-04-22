@@ -13,49 +13,41 @@ def main(dataset="sim"):
     print(f"Using device: {device}")
     print(f"Training LSTM on dataset: {dataset}")
 
-    # LOAD DATA
     split_dir = f"data/splits/{dataset}_splits/"
 
+
+    # LOAD DATA
     X_train = np.load(os.path.join(split_dir, "X_train.npy"))
     y_train = np.load(os.path.join(split_dir, "y_train.npy"))
 
-    X_test = np.load(os.path.join(split_dir, "X_test.npy"))
-    y_test = np.load(os.path.join(split_dir, "y_test.npy"))
-
     print("Train shape:", X_train.shape)
-    print("Test shape :", X_test.shape)
-
-    # CONVERT TO TENSORS
+    print("Class distribution:", np.bincount(y_train))
 
     X_train = torch.tensor(X_train, dtype=torch.float32)
     y_train = torch.tensor(y_train, dtype=torch.long)
 
-    X_test = torch.tensor(X_test, dtype=torch.float32)
-    y_test = torch.tensor(y_test, dtype=torch.long)
-
     train_loader = DataLoader(
         TensorDataset(X_train, y_train),
-        batch_size=256,
+        batch_size=1024,
         shuffle=True
     )
 
-    # MODEL
     input_dim = X_train.shape[-1]
-    num_classes = len(np.unique(y_train.numpy()))
+    num_classes = 5 
 
     model = LSTMClassifier(
         input_dim=input_dim,
         num_classes=num_classes
     ).to(device)
 
-    # CLASS WEIGHTS
+    # IMPROVED CLASS WEIGHTS
     print("Computing class weights...")
 
     class_counts = np.bincount(y_train.numpy())
-    class_weights = 1.0 / (class_counts + 1e-6) 
+
+    class_weights = 1.0 / np.sqrt(class_counts + 1e-6)
     class_weights = class_weights / class_weights.sum()
 
-    print("Class counts:", class_counts)
     print("Class weights:", class_weights)
 
     weights = torch.tensor(class_weights, dtype=torch.float32).to(device)
@@ -64,7 +56,7 @@ def main(dataset="sim"):
     optimizer = optim.Adam(model.parameters(), lr=0.001)
 
     # TRAINING LOOP
-    epochs = 5
+    epochs = 5 
 
     for epoch in range(epochs):
         model.train()
@@ -74,9 +66,16 @@ def main(dataset="sim"):
             X_batch = X_batch.to(device)
             y_batch = y_batch.to(device)
 
+            if X_batch.dim() == 2:
+                X_batch = X_batch.unsqueeze(1)
+
             optimizer.zero_grad()
 
             outputs = model(X_batch)
+
+            if outputs.dim() == 3:
+                outputs = outputs[:, -1, :]
+
             loss = criterion(outputs, y_batch)
 
             loss.backward()
@@ -86,7 +85,7 @@ def main(dataset="sim"):
 
         print(f"Epoch {epoch+1}/{epochs} - Loss: {total_loss:.4f}")
 
-    #Save model
+    # SAVE MODEL
     os.makedirs("models", exist_ok=True)
     torch.save(model.state_dict(), f"models/lstm_classifier_{dataset}.pt")
 
